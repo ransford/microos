@@ -1,0 +1,30 @@
+#!/bin/bash
+# Builds and publishes the VM image in one go, from an already-built kernel
+# in ~/linux: initramfs, then the UEFI disk, then the OCI artifact in ECR
+# (tagged with the kernel version, build time and `latest`), then the AMI.
+#
+# Usage: release [--no-oci] [--no-ami]
+set -euo pipefail
+
+here=$(dirname "$(readlink -f "$0")")
+KERNEL_DIR=${KERNEL_DIR:-$HOME/linux}
+oci=1 ami=1
+for arg; do
+  case $arg in
+    --no-oci) oci= ;;
+    --no-ami) ami= ;;
+    *) echo "usage: $0 [--no-oci] [--no-ami]" >&2; exit 2 ;;
+  esac
+done
+
+[ -f "$KERNEL_DIR/arch/x86/boot/bzImage" ] ||
+  { echo "error: build the kernel first: cd $KERNEL_DIR && make defconfig && make -j\$(nproc)" >&2; exit 1; }
+
+# OCI tags and AMI names allow different characters; this suits both.
+version=$(make -s -C "$KERNEL_DIR" kernelrelease | tr -c 'A-Za-z0-9.\n' '_')-$(date -u +%Y%m%d%H%M%S)
+disk=$HOME/microos.img
+
+"$here/build-initramfs"
+"$here/build-disk" "$disk"
+[ -z "$oci" ] || "$here/push-oci" "$disk" "$version" latest
+[ -z "$ami" ] || "$here/make-ami" "$disk" "microos-$version"

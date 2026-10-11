@@ -1,0 +1,66 @@
+#!/bin/bash
+# Builds a bootable UEFI disk image from a kernel and initramfs. The disk has a
+# GPT with one EFI system partition holding a unified kernel image (UKI: the
+# kernel, initramfs and command line in one EFI executable) at the removable-
+# media path EFI/BOOT/BOOTX64.EFI, so any UEFI firmware boots it with no
+# bootloader or NVRAM entry: OVMF in QEMU, and EC2 with --boot-mode uefi.
+#
+# Usage: build-disk [output]               (default: ~/microos.img)
+#
+# Environment:
+#   KERNEL_DIR  kernel tree with a built bzImage (default: ~/linux)
+#   INITRD      initramfs to embed (default: ~/initramfs.cpio.gz)
+#   CMDLINE     kernel command line (default: console=ttyS0 panic=-1)
+set -euo pipefail
+
+KERNEL_DIR=${KERNEL_DIR:-$HOME/linux}
+INITRD=${INITRD:-$HOME/initramfs.cpio.gz}
+# ttyS0 is the serial console both in QEMU and on EC2 x86 instances.
+CMDLINE=${CMDLINE:-console=ttyS0 panic=-1}
+out=$(realpath -m "${1:-$HOME/microos.img}")
+kernel=$KERNEL_DIR/arch/x86/boot/bzImage
+
+# 1 GiB is the smallest EBS volume, so a smaller disk gains nothing on EC2,
+# and the raw image is sparse and the qcow2 compressed anyway. The ESP starts
+# at 1 MiB and leaves 1 MiB at the end for the backup GPT.
+DISK_MIB=1024
+ESP_START_MIB=1
+ESP_MIB=$((DISK_MIB - 2))
+
+for f in "$kernel" "$INITRD"; do
+  [ -f "$f" ] || { echo "error: $f not found" >&2; exit 1; }
+done
+
+# The firmware runs the kernel's own EFI stub, and the UKI stub hands it the
+# embedded initramfs.
+if [ -f "$KERNEL_DIR/.config" ]; then
+  for opt in EFI EFI_STUB; do
+    grep -qx "CONFIG_$opt=y" "$KERNEL_DIR/.config" ||
+      echo "warning: CONFIG_$opt is not =y in $KERNEL_DIR/.config; the disk will not boot" >&2
+  done
+fi
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# ukify finds the systemd-boot-efi stub (linuxx64.efi.stub) by itself.
+ukify build --linux="$kernel" --initrd="$INITRD" --cmdline="$CMDLINE" \
+  --output="$tmp/BOOTX64.EFI"
+
+# Build the FAT filesystem in its own file with mtools, then copy it into the
+# partition, so none of this needs root or loop devices.
+esp=$tmp/esp.img
+truncate -s "${ESP_MIB}M" "$esp"
+mkfs.fat -F 32 -n ESP "$esp" >/dev/null
+mmd -i "$esp" ::/EFI ::/EFI/BOOT
+mcopy -i "$esp" "$tmp/BOOTX64.EFI" ::/EFI/BOOT/BOOTX64.EFI
+
+rm -f "$out"
+truncate -s "${DISK_MIB}M" "$out"
+sfdisk --quiet "$out" <<EOF
+label: gpt
+start=${ESP_START_MIB}MiB, size=${ESP_MIB}MiB, type=uefi, name=ESP
+EOF
+dd if="$esp" of="$out" bs=1M seek="$ESP_START_MIB" conv=notrunc,sparse status=none
+
+echo "Wrote $out ($(du -h "$out" | cut -f1) used of ${DISK_MIB}M)"

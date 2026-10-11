@@ -1,0 +1,36 @@
+#!/bin/bash
+# Turns a disk image from build-disk into an AMI: uploads it straight to an
+# EBS snapshot with coldsnap (EBS direct APIs, no volume to attach), then
+# registers the snapshot as a UEFI-booting x86_64 AMI. Prints the AMI ID.
+#
+# Usage: make-ami [disk] [name]            (defaults: ~/microos.img, microos-<UTC time>)
+#
+# Environment:
+#   AWS_REGION  set by cloud-init on the builders
+set -euo pipefail
+
+disk=$(realpath "${1:-$HOME/microos.img}")
+name=${2:-microos-$(date -u +%Y%m%d-%H%M%S)}
+region=${AWS_REGION:?AWS_REGION is not set}
+
+echo "Uploading $disk to an EBS snapshot" >&2
+snapshot=$(coldsnap upload --wait "$disk" | grep -o 'snap-[0-9a-f]*' | tail -n1)
+[ -n "$snapshot" ] || { echo "error: coldsnap did not report a snapshot ID" >&2; exit 1; }
+aws ec2 create-tags --region "$region" --resources "$snapshot" \
+  --tags Key=Name,Value="$name"
+
+# --ena-support is required to launch on Nitro instance types, even though the
+# kernel only has an ENA driver if you enable CONFIG_ENA_ETHERNET.
+echo "Registering $snapshot as $name" >&2
+aws ec2 register-image --region "$region" \
+  --name "$name" \
+  --description "microos: kernel + BusyBox initramfs as a UKI" \
+  --architecture x86_64 \
+  --virtualization-type hvm \
+  --boot-mode uefi \
+  --ena-support \
+  --imds-support v2.0 \
+  --root-device-name /dev/xvda \
+  --block-device-mappings "DeviceName=/dev/xvda,Ebs={SnapshotId=$snapshot,VolumeType=gp3,DeleteOnTermination=true}" \
+  --tag-specifications "ResourceType=image,Tags=[{Key=Name,Value=$name}]" \
+  --query ImageId --output text

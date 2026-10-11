@@ -1,0 +1,34 @@
+#!/bin/bash
+# Pushes a disk image from build-disk to ECR as an OCI artifact with one
+# layer: the disk as compressed qcow2. Pull it anywhere with `oras pull`
+# (fetch-vm does that on a Mac).
+#
+# Usage: push-oci [disk] [tag...]          (defaults: ~/microos.img, latest)
+#
+# Environment:
+#   REPO        ECR repository, created by ../registry (default: microos)
+#   AWS_REGION  set by cloud-init on the builders
+set -euo pipefail
+
+disk=$(realpath "${1:-$HOME/microos.img}")
+shift || true
+tags=("${@:-latest}")
+REPO=${REPO:-microos}
+region=${AWS_REGION:?AWS_REGION is not set}
+
+account=$(aws sts get-caller-identity --query Account --output text)
+registry=$account.dkr.ecr.$region.amazonaws.com
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+qemu-img convert -c -O qcow2 "$disk" "$tmp/microos.qcow2"
+
+aws ecr get-login-password --region "$region" |
+  oras login --username AWS --password-stdin "$registry"
+
+# oras records each file's path as its title, which is the name `oras pull`
+# writes it under, so push from inside the directory.
+cd "$tmp"
+oras push --artifact-type application/vnd.microos.vm.v1 \
+  "$registry/$REPO:$(IFS=,; echo "${tags[*]}")" \
+  microos.qcow2:application/vnd.microos.disk.v1.qcow2

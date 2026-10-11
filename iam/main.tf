@@ -24,6 +24,7 @@ data "aws_caller_identity" "current" {}
 
 locals {
   tailscale_param_arn = "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.tailscale_auth_key_param}"
+  ecr_repository_arn  = "arn:aws:ecr:${var.region}:${data.aws_caller_identity.current.account_id}:repository/${var.ecr_repository}"
 }
 
 # Role assumed by the kernel-builder EC2 instances.
@@ -61,6 +62,59 @@ resource "aws_iam_role_policy" "tailscale_key" {
       Action   = ["ssm:GetParameter"]
       Resource = local.tailscale_param_arn
     }]
+  })
+}
+
+# Lets image/push-oci push VM images to the ../registry ECR repository, and
+# image/make-ami upload a disk to an EBS snapshot (EBS direct APIs, used by
+# coldsnap) and register it as an AMI.
+resource "aws_iam_role_policy" "publish_vm_image" {
+  name = "publish-vm-image"
+  role = aws_iam_role.runner.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:BatchGetImage",
+          "ecr:CompleteLayerUpload",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:InitiateLayerUpload",
+          "ecr:PutImage",
+          "ecr:UploadLayerPart",
+        ]
+        Resource = local.ecr_repository_arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ebs:StartSnapshot", "ebs:PutSnapshotBlock", "ebs:CompleteSnapshot"]
+        Resource = "arn:aws:ec2:${var.region}::snapshot/*"
+      },
+      # Describe* can't be scoped to resources.
+      {
+        Effect   = "Allow"
+        Action   = ["ec2:DescribeImages", "ec2:DescribeSnapshots"]
+        Resource = "*"
+      },
+      # Tagging and registering only touch AMIs and snapshots, never instances
+      # or other resources in the account.
+      {
+        Effect = "Allow"
+        Action = ["ec2:CreateTags", "ec2:RegisterImage"]
+        Resource = [
+          "arn:aws:ec2:${var.region}::image/*",
+          "arn:aws:ec2:${var.region}::snapshot/*",
+        ]
+      },
+    ]
   })
 }
 

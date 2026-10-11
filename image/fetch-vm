@@ -1,0 +1,25 @@
+#!/bin/bash
+# Pulls a VM image that push-oci published to ECR, for running with run-vm.
+# Meant for your Mac (brew install oras qemu), using your AWS CLI login.
+#
+# Usage: fetch-vm [tag] [dir]              (defaults: latest, current directory)
+#   Writes <dir>/microos.qcow2.
+#
+# Environment:
+#   AWS_PROFILE  (default: sandbox-admin)
+#   AWS_REGION   (default: us-west-2)
+#   REPO         ECR repository (default: microos)
+set -euo pipefail
+
+tag=${1:-latest}
+dir=${2:-.}
+export AWS_PROFILE=${AWS_PROFILE:-sandbox-admin}
+export AWS_REGION=${AWS_REGION:-us-west-2}
+REPO=${REPO:-microos}
+
+account=$(aws sts get-caller-identity --query Account --output text)
+registry=$account.dkr.ecr.$AWS_REGION.amazonaws.com
+
+aws ecr get-login-password | oras login --username AWS --password-stdin "$registry"
+oras pull --output "$dir" "$registry/$REPO:$tag"
+echo "Run it with: $(dirname "$0")/run-vm $dir/microos.qcow2"

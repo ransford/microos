@@ -20,3 +20,9 @@ variable "tailscale_auth_key_param" {
   type        = string
   default     = "/kernel-builder/tailscale-auth-key"
 }
+
+variable "ecr_repository" {
+  description = "ECR repository the instances push VM images to (created by ../registry)."
+  type        = string
+  default     = "microos"
+}

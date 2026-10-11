@@ -23,6 +23,14 @@ packages:
   - bzip2
   - fakeroot
   - qemu-system-x86
+  # VM disk image (image/build-disk, push-oci, run-vm)
+  - dosfstools
+  - fdisk
+  - mtools
+  - ovmf
+  - qemu-utils
+  - systemd-boot-efi
+  - systemd-ukify
   # General tooling
   - curl
   - git
@@ -30,6 +38,26 @@ packages:
   - pkg-config
 
 write_files:
+  # image/push-oci, make-ami and coldsnap read the region from here.
+  - path: /etc/profile.d/aws-region.sh
+    content: |
+      export AWS_REGION=${region} AWS_DEFAULT_REGION=${region}
+  # Installs oras (OCI artifact client) from its GitHub release. To change
+  # versions, update both lines; the checksum is in the release's
+  # oras_<version>_checksums.txt.
+  - path: /usr/local/sbin/install-oras
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      ORAS_VERSION=1.3.4
+      ORAS_SHA256=f27adb935022d94df8dc77719c322dda592c78a0d57a6f7dcdd8d900b248c454
+      tarball=oras_$${ORAS_VERSION}_linux_amd64.tar.gz
+      cd "$(mktemp -d)"
+      curl -fsSLo "$tarball" "https://github.com/oras-project/oras/releases/download/v$ORAS_VERSION/$tarball"
+      echo "$ORAS_SHA256  $tarball" | sha256sum -c --quiet -
+      tar -xzf "$tarball" oras
+      install -m 0755 oras /usr/local/bin/oras
   # Joins the tailnet using the auth key stored in SSM Parameter Store.
   # Runs on every boot; a no-op when already connected, and re-authenticates
   # if an ephemeral node was dropped from the tailnet while offline.
@@ -95,5 +123,10 @@ write_files:
 runcmd:
   - systemctl daemon-reload
   - systemctl enable --now tailscale-bootstrap.service
+  - command -v aws >/dev/null || snap install aws-cli --classic
+  - /usr/local/sbin/install-oras
   - sudo -u ubuntu -H bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
   - sudo -u ubuntu -H /usr/local/bin/fetch-latest-kernel
+  # Uploads disk images straight to EBS snapshots (image/make-ami). Last, as
+  # compiling it takes a few minutes.
+  - sudo -u ubuntu -H bash -c "~/.cargo/bin/cargo install --locked coldsnap"
