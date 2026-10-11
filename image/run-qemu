@@ -9,7 +9,18 @@ set -euo pipefail
 kernel=${1:-$HOME/linux/arch/x86/boot/bzImage}
 initrd=${2:-$HOME/initramfs.cpio.gz}
 
-# KVM when /dev/kvm is usable, otherwise software emulation. panic=-1 plus
-# -no-reboot makes QEMU exit instead of hanging if the kernel panics.
-exec qemu-system-x86_64 -accel kvm -accel tcg -m 512M -nographic -no-reboot \
+# Software emulation (TCG) unless /dev/kvm exists, which it doesn't on
+# non-metal EC2 instances. With KVM, QEMU still falls back to TCG if it can't
+# open /dev/kvm (e.g. the user isn't in the kvm group).
+accel=(-accel tcg)
+if [ -e /dev/kvm ]; then
+  accel=(-accel kvm "${accel[@]}")
+fi
+
+# Ubuntu 26.04's GCC targets x86-64-v3 by default, and the kernel's boot
+# decompressor (unlike the rest of the kernel) doesn't override that, so the
+# default qemu64 CPU triple-faults before printing anything. -cpu max has every
+# feature QEMU can provide, with KVM or TCG.
+# panic=-1 plus -no-reboot makes QEMU exit instead of hanging if the kernel panics.
+exec qemu-system-x86_64 "${accel[@]}" -cpu max -m 512M -nographic -no-reboot \
   -kernel "$kernel" -initrd "$initrd" -append "console=ttyS0 panic=-1"

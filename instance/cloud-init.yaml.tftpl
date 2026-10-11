@@ -80,8 +80,15 @@ write_files:
       ver=$(jq -r .latest_stable.version <<<"$releases")
       url=$(jq -r --arg v "$ver" '.releases[] | select(.version == $v) | .source' <<<"$releases")
       if [ ! -d "linux-$ver" ]; then
+        tarball=$(basename "$url")
         echo "Fetching Linux $ver from $url"
-        curl -fsSL "$url" | tar -xJ
+        curl -fsSLo "$tarball" "$url"
+        # kernel.org publishes sha256sums.asc next to each tarball. With no
+        # matching line, sha256sum -c fails too.
+        curl -fsSL "$(dirname "$url")/sha256sums.asc" |
+          awk -v f="$tarball" '$2 == f' | sha256sum -c -
+        tar -xJf "$tarball"
+        rm "$tarball"
       fi
       ln -sfn "linux-$ver" linux
 
