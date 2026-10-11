@@ -1,0 +1,88 @@
+#cloud-config
+hostname: ${hostname}
+
+package_update: true
+package_upgrade: true
+packages:
+  # Kernel build toolchain
+  - build-essential
+  - bc
+  - bison
+  - flex
+  - cpio
+  - dwarves
+  - kmod
+  - libelf-dev
+  - libncurses-dev
+  - libssl-dev
+  - rsync
+  - xz-utils
+  - zstd
+  - ccache
+  # General tooling
+  - curl
+  - git
+  - jq
+  - pkg-config
+
+write_files:
+  # Joins the tailnet using the auth key stored in SSM Parameter Store.
+  # Runs on every boot; a no-op when already connected, and re-authenticates
+  # if an ephemeral node was dropped from the tailnet while offline.
+  - path: /usr/local/sbin/tailscale-bootstrap
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      if ! command -v tailscale >/dev/null; then
+        curl -fsSL https://tailscale.com/install.sh | sh
+      fi
+      systemctl enable --now tailscaled
+      state=$(tailscale status --json 2>/dev/null | jq -r .BackendState || true)
+      if [ "$state" = "Running" ]; then
+        exit 0
+      fi
+      if ! command -v aws >/dev/null; then
+        snap install aws-cli --classic
+      fi
+      key=$(aws ssm get-parameter --region ${region} --name ${ts_key_param} \
+        --with-decryption --query Parameter.Value --output text)
+      tailscale up --auth-key="$key" --hostname=${hostname}
+  - path: /etc/systemd/system/tailscale-bootstrap.service
+    content: |
+      [Unit]
+      Description=Join the tailnet with the auth key from SSM
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      Type=oneshot
+      Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+      ExecStart=/usr/local/sbin/tailscale-bootstrap
+      Restart=on-failure
+      RestartSec=15
+
+      [Install]
+      WantedBy=multi-user.target
+  # Downloads the latest stable kernel tarball into ~/linux-<ver>, with ~/linux
+  # symlinked to it. Re-run any time to pick up a newer release.
+  - path: /usr/local/bin/fetch-latest-kernel
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      cd "$HOME"
+      releases=$(curl -fsSL https://www.kernel.org/releases.json)
+      ver=$(jq -r .latest_stable.version <<<"$releases")
+      url=$(jq -r --arg v "$ver" '.releases[] | select(.version == $v) | .source' <<<"$releases")
+      if [ ! -d "linux-$ver" ]; then
+        echo "Fetching Linux $ver from $url"
+        curl -fsSL "$url" | tar -xJ
+      fi
+      ln -sfn "linux-$ver" linux
+
+runcmd:
+  - systemctl daemon-reload
+  - systemctl enable --now tailscale-bootstrap.service
+  - sudo -u ubuntu -H bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+  - sudo -u ubuntu -H /usr/local/bin/fetch-latest-kernel
