@@ -103,6 +103,27 @@ You can change the defaults with `-var`, for example `tofu -chdir=instance apply
 If Tailscale doesn't come up, use the SSM fallback:
 `aws ssm start-session --profile sandbox-admin --target <instance id>` (needs the Session Manager plugin).
 
+## Build an initramfs and boot it in QEMU
+
+`image/` holds the scripts and files for a minimal initramfs: a static BusyBox built from source,
+with BusyBox `init` as `/sbin/init` (and `/init`), configured by `image/rootfs/etc/inittab` and
+`image/rootfs/etc/init.d/rcS`. Copy it to the builder and build there, after the kernel:
+
+```fish
+rsync -a image/ kernel-builder-0:image/
+ssh kernel-builder-0
+```
+
+```sh
+~/image/build-initramfs                   # writes ~/initramfs.cpio.gz
+~/image/run-qemu                          # boots ~/linux's bzImage with it; `poweroff` or Ctrl-A X to quit
+```
+
+The initramfs has no kernel modules, so anything it needs must be built into the kernel (`=y`).
+x86_64 `defconfig` already covers a shell on the serial console; `build-initramfs` warns if one of
+the options it relies on is missing. Device nodes come from devtmpfs, which the kernel fills in and
+`rcS` mounts on `/dev`. The archive itself holds only `/dev/console`.
+
 ## Tear down
 
 ```fish

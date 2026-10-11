@@ -1,0 +1,15 @@
+#!/bin/bash
+# Boots a kernel and initramfs in QEMU on the serial console.
+# Exit with `poweroff` in the guest, or Ctrl-A X.
+#
+# Usage: run-qemu [bzImage] [initramfs]
+#   (defaults: ~/linux/arch/x86/boot/bzImage and ~/initramfs.cpio.gz)
+set -euo pipefail
+
+kernel=${1:-$HOME/linux/arch/x86/boot/bzImage}
+initrd=${2:-$HOME/initramfs.cpio.gz}
+
+# KVM when /dev/kvm is usable, otherwise software emulation. panic=-1 plus
+# -no-reboot makes QEMU exit instead of hanging if the kernel panics.
+exec qemu-system-x86_64 -accel kvm -accel tcg -m 512M -nographic -no-reboot \
+  -kernel "$kernel" -initrd "$initrd" -append "console=ttyS0 panic=-1"

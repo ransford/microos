@@ -1,0 +1,67 @@
+#!/bin/bash
+# Builds a minimal initramfs: a static BusyBox (built from source) plus the
+# files in rootfs/ next to this script, packed as a gzipped newc cpio archive
+# that QEMU can load with -initrd.
+#
+# Usage: build-initramfs [output]          (default: ~/initramfs.cpio.gz)
+#
+# Environment:
+#   KERNEL_DIR  kernel tree whose .config is checked (default: ~/linux)
+#   WORK_DIR    BusyBox source and rootfs staging area (default: ~/initramfs-build)
+set -euo pipefail
+
+# To change versions, update both lines; the checksum is published next to the
+# tarball at https://busybox.net/downloads/.
+BUSYBOX_VERSION=1.38.0
+BUSYBOX_SHA256=34f9ea6ff8636f2c9241153b9114eefa9e65674a45318ae1ef95bb5f31c53bb2
+
+KERNEL_DIR=${KERNEL_DIR:-$HOME/linux}
+WORK_DIR=${WORK_DIR:-$HOME/initramfs-build}
+out=$(realpath -m "${1:-$HOME/initramfs.cpio.gz}")
+overlay=$(dirname "$(readlink -f "$0")")/rootfs
+
+# The initramfs has no kernel modules, so everything needed to reach a shell on
+# the serial console must be built in (=y).
+if [ -f "$KERNEL_DIR/.config" ]; then
+  for opt in BLK_DEV_INITRD RD_GZIP DEVTMPFS BINFMT_ELF BINFMT_SCRIPT SERIAL_8250_CONSOLE; do
+    grep -qx "CONFIG_$opt=y" "$KERNEL_DIR/.config" ||
+      echo "warning: CONFIG_$opt is not =y in $KERNEL_DIR/.config; the initramfs may not boot" >&2
+  done
+fi
+
+mkdir -p "$WORK_DIR"
+cd "$WORK_DIR"
+
+src=busybox-$BUSYBOX_VERSION
+if [ ! -d "$src" ]; then
+  curl -fsSLo "$src.tar.bz2" "https://busybox.net/downloads/$src.tar.bz2"
+  echo "$BUSYBOX_SHA256  $src.tar.bz2" | sha256sum -c --quiet -
+  tar -xjf "$src.tar.bz2"
+fi
+
+make -C "$src" -s defconfig
+# Static, so the initramfs needs no libc or dynamic loader.
+sed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' "$src/.config"
+# tc doesn't build against kernel headers >= 6.8, which dropped the CBQ qdisc.
+sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' "$src/.config"
+make -C "$src" -s -j"$(nproc)"
+
+root=$WORK_DIR/rootfs
+rm -rf "$root"
+# Installs bin/busybox and a symlink for each applet, including sbin/init.
+make -C "$src" -s CONFIG_PREFIX="$root" install
+rm -f "$root/linuxrc"
+mkdir -p "$root"/{dev,proc,sys,tmp,root}
+cp -a "$overlay/." "$root/"
+# From an initramfs the kernel runs /init, not /sbin/init.
+ln -s sbin/init "$root/init"
+
+# fakeroot makes every file root-owned in the archive and lets us create the
+# /dev/console node without being root. The kernel opens /dev/console for
+# init's stdin/stdout/stderr before init runs; rcS then mounts devtmpfs over
+# /dev for everything else.
+fakeroot -- sh -c 'mknod -m 600 "$1/dev/console" c 5 1 &&
+  cd "$1" && find . -print0 | cpio --null -o -H newc --quiet' sh "$root" |
+  gzip -9 >"$out"
+
+echo "Wrote $out ($(du -h "$out" | cut -f1))"

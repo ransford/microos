@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs once at boot, from the sysinit line in /etc/inittab.
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+# The kernel creates device nodes in devtmpfs by itself, but doesn't mount it
+# when booting from an initramfs (CONFIG_DEVTMPFS_MOUNT applies only to a
+# disk root filesystem).
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts
+hostname -F /etc/hostname
+ip link set lo up

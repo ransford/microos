@@ -1,0 +1,6 @@
+# BusyBox init(8) config. Format: <tty>:<ignored>:<action>:<command>
+::sysinit:/etc/init.d/rcS
+# cttyhack opens the real console device (e.g. ttyS0) instead of /dev/console,
+# so the shell gets a controlling tty and job control (Ctrl-C works).
+::respawn:/bin/cttyhack /bin/sh -l
+::ctrlaltdel:/sbin/reboot
